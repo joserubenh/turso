@@ -20,13 +20,25 @@ pub struct TranslateResult {
     pub cmd: ast::Cmd,
 }
 
-/// The schemas of a session, which the translator needs to place the
-/// objects that a statement creates without naming a schema.
+/// The kinds of objects that a name can refer to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectKind {
+    /// A table, view or materialized view.
+    Relation,
+    Index,
+    Sequence,
+}
+
+/// The schemas of a session, which the translator needs for names that do
+/// not name a schema.
 pub trait SchemaLookup {
     /// The schemas of `search_path`, in order.
     fn search_path(&self) -> Vec<String>;
     /// Whether schema `schema` exists.
     fn schema_exists(&self, schema: &str) -> bool;
+    /// Whether schema `schema` has an object of `kind` named `name`.
+    fn object_exists(&self, kind: ObjectKind, schema: &str, name: &str)
+        -> Result<bool, ParseError>;
 }
 
 /// Translates a PostgreSQL query into Turso's AST
@@ -3264,7 +3276,7 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
         }
 
         // Translate function arguments
-        let args = func_call
+        let mut args = func_call
             .args
             .iter()
             .map(|arg| Ok(Box::new(self.translate_expr(arg)?)))
@@ -3281,6 +3293,13 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
             .strip_prefix("pg_catalog.")
             .unwrap_or(&func_name)
             .to_string();
+
+        if matches!(
+            func_name.to_ascii_lowercase().as_str(),
+            "nextval" | "currval" | "setval"
+        ) {
+            self.write_schema_into_sequence_name(&mut args)?;
+        }
 
         // Rewrite PG-specific function-name spellings to their core-native
         // equivalents so the core resolver doesn't need to carry aliases
@@ -3333,6 +3352,56 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
             within_group,
             filter_over,
         })
+    }
+
+    /// Writes into the sequence name that `args` of a sequence function start
+    /// with the schema of `search_path` that has the sequence, if the name
+    /// has no schema.
+    fn write_schema_into_sequence_name(
+        &self,
+        args: &mut [Box<ast::Expr>],
+    ) -> Result<(), ParseError> {
+        let Some(first) = args.first_mut() else {
+            return Ok(());
+        };
+        let ast::Expr::Literal(ast::Literal::String(quoted)) = first.as_ref() else {
+            return Ok(());
+        };
+        let name = quoted[1..quoted.len() - 1].replace("''", "'");
+        if name.contains('.') {
+            return Ok(());
+        }
+        if let Some(schema) = self.schema_of_sequence(&name)? {
+            if schema != "public" {
+                **first = ast::Expr::Literal(ast::Literal::String(format!(
+                    "'{}'",
+                    format!("{schema}.{name}").replace('\'', "''")
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The first schema of `search_path` that has sequence `name`. It is an
+    /// error if an earlier schema has a table, view or index named `name`,
+    /// because sequences share their names with those.
+    fn schema_of_sequence(&self, name: &str) -> Result<Option<String>, ParseError> {
+        let Some(lookup) = self.lookup else {
+            return Ok(None);
+        };
+        for schema in lookup.search_path() {
+            if lookup.object_exists(ObjectKind::Sequence, &schema, name)? {
+                return Ok(Some(schema));
+            }
+            if lookup.object_exists(ObjectKind::Relation, &schema, name)?
+                || lookup.object_exists(ObjectKind::Index, &schema, name)?
+            {
+                return Err(ParseError::ParseError(format!(
+                    "\"{name}\" is not a sequence"
+                )));
+            }
+        }
+        Ok(None)
     }
 
     /// Translate the WINDOW clause (named window definitions) from a SELECT statement.

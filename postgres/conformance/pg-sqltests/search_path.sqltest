@@ -99,3 +99,33 @@ test create-with-no-existing-schema-in-search-path-errors {
 expect error {
     no schema has been selected to create in
 }
+
+test sequence-functions-follow-search-path {
+    CREATE SCHEMA IF NOT EXISTS sp_nv;
+    DROP SEQUENCE IF EXISTS sp_nv.s;
+    CREATE SEQUENCE sp_nv.s;
+    SET search_path TO sp_nv;
+    SELECT nextval('s');
+    SELECT currval('s');
+    SELECT setval('s', 10);
+    SELECT nextval('sp_nv.s');
+}
+expect {
+    1
+    1
+    10
+    11
+}
+
+test nextval-errors-when-search-path-first-finds-a-table {
+    DROP TABLE IF EXISTS sp_nvt_s;
+    CREATE TABLE sp_nvt_s (x int);
+    CREATE SCHEMA IF NOT EXISTS sp_nvt;
+    DROP SEQUENCE IF EXISTS sp_nvt.sp_nvt_s;
+    CREATE SEQUENCE sp_nvt.sp_nvt_s;
+    SET search_path TO public, sp_nvt;
+    SELECT nextval('sp_nvt_s');
+}
+expect error {
+    "sp_nvt_s" is not a sequence
+}

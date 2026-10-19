@@ -9,9 +9,10 @@ use turso_parser::ast::{self};
 use turso_pg_parser::translator::{
     is_comment_on, is_refresh_matview, is_set_transaction, try_extract_copy_from,
     try_extract_create_schema, try_extract_drop_schema, try_extract_set, try_extract_show,
-    PgCopyFromStmt, PgCreateSchemaStmt, PgDropSchemaStmt, PgSetStmt, PostgreSQLTranslator,
-    SchemaLookup,
+    ObjectKind, PgCopyFromStmt, PgCreateSchemaStmt, PgDropSchemaStmt, PgSetStmt,
+    PostgreSQLTranslator, SchemaLookup,
 };
+use turso_pg_parser::ParseError;
 
 use crate::copy::parse_copy_text_format;
 
@@ -237,6 +238,34 @@ impl SchemaLookup for SessionSchemaLookup<'_> {
                 .attached_database_names()
                 .iter()
                 .any(|name| name == schema)
+    }
+
+    fn object_exists(
+        &self,
+        kind: ObjectKind,
+        schema: &str,
+        name: &str,
+    ) -> std::result::Result<bool, ParseError> {
+        let database = match schema {
+            "public" => "main",
+            schema if self.schema_exists(schema) => schema,
+            _ => return Ok(false),
+        };
+        let (types, name) = match kind {
+            ObjectKind::Relation => ("'table', 'view'", name.to_string()),
+            ObjectKind::Index => ("'index'", name.to_string()),
+            ObjectKind::Sequence => ("'table'", format!("{SEQUENCE_TABLE_PREFIX}{name}")),
+        };
+        let sql = format!(
+            "SELECT 1 FROM \"{}\".sqlite_schema WHERE type IN ({types}) AND lower(name) = lower('{}')",
+            database.replace('"', "\"\""),
+            name.replace('\'', "''")
+        );
+        self.conn
+            .prepare_sqlite(sql)
+            .and_then(|mut stmt| stmt.run_collect_rows())
+            .map(|rows| !rows.is_empty())
+            .map_err(|e| ParseError::ParseError(e.to_string()))
     }
 }
 
