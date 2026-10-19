@@ -1077,6 +1077,23 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
             }
         };
 
+        let kind = match remove_type {
+            ObjectType::ObjectTable | ObjectType::ObjectView | ObjectType::ObjectMatview => {
+                Some(ObjectKind::Relation)
+            }
+            ObjectType::ObjectIndex => Some(ObjectKind::Index),
+            ObjectType::ObjectSequence => Some(ObjectKind::Sequence),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            if drop.missing_ok
+                && qualified_name.db_name.is_none()
+                && !self.exists_through_search_path(kind, qualified_name.name.as_str())?
+            {
+                return Ok(statement_that_does_nothing());
+            }
+        }
+
         match remove_type {
             ObjectType::ObjectTable => Ok(ast::Stmt::DropTable {
                 if_exists: drop.missing_ok,
@@ -3394,6 +3411,20 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
         Ok(())
     }
 
+    /// Whether a schema of `search_path` has an object of `kind` named
+    /// `name`. Without a lookup, core decides.
+    fn exists_through_search_path(&self, kind: ObjectKind, name: &str) -> Result<bool, ParseError> {
+        let Some(lookup) = self.lookup else {
+            return Ok(true);
+        };
+        for schema in lookup.search_path() {
+            if lookup.object_exists(kind, &schema, name)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// The first schema of `search_path` that has sequence `name`. It is an
     /// error if an earlier schema has a table, view or index named `name`,
     /// because sequences share their names with those.
@@ -4247,6 +4278,16 @@ fn map_schema_name(schema: &str) -> &str {
     match schema.to_ascii_lowercase().as_str() {
         "pg_catalog" | "public" | "information_schema" => "main",
         _ => schema,
+    }
+}
+
+/// A statement that does nothing, for `DROP ... IF EXISTS` of an object
+/// that does not exist.
+fn statement_that_does_nothing() -> ast::Stmt {
+    const SQL: &str = "SELECT 0 WHERE 0";
+    match turso_parser::parser::Parser::new(SQL.as_bytes()).next() {
+        Some(Ok(ast::Cmd::Stmt(stmt))) => stmt,
+        other => panic!("{SQL} parses as a statement, got {other:?}"),
     }
 }
 

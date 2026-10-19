@@ -156,3 +156,16 @@ test drop-sequence-errors-when-search-path-first-finds-a-table {
 expect error {
     "sp_dst_s" is not a sequence
 }
+
+test drop-table-if-exists-ignores-tables-outside-search-path {
+    DROP TABLE IF EXISTS t;
+    CREATE TABLE t (x int);
+    INSERT INTO t VALUES (1);
+    CREATE SCHEMA IF NOT EXISTS sp_de;
+    SET search_path TO sp_de;
+    DROP TABLE IF EXISTS t;
+    SELECT x FROM public.t;
+}
+expect {
+    1
+}

@@ -644,7 +644,7 @@ fn is_pg_non_query(sql: &str) -> bool {
         || upper.starts_with("SET")
         || upper.starts_with("LOCK")
         || upper.starts_with("CREATE SCHEMA")
-        || upper.starts_with("DROP SCHEMA")
+        || upper.starts_with("DROP")
         || upper.starts_with("REFRESH MATERIALIZED VIEW")
         || upper.starts_with("COMMENT")
 }
@@ -877,6 +877,31 @@ mod tests {
         }
         let query = conn.prepare("SELECT 'LOCK TABLE items'").unwrap();
         assert_eq!(build_field_info(&query, &Format::UnifiedText).len(), 1);
+    }
+
+    #[test]
+    fn test_drop_if_exists_of_missing_object_has_no_result_fields() {
+        let (_io, db) = turso_pg::open_database(
+            ":memory:",
+            None,
+            turso_pg::OpenFlags::default(),
+            turso_pg::DatabaseOpts::new(),
+        )
+        .unwrap();
+        let conn = turso_pg::PgConnection::connect(&db).unwrap();
+        for sql in [
+            "DROP TABLE IF EXISTS missing",
+            "DROP VIEW IF EXISTS missing",
+            "DROP INDEX IF EXISTS missing",
+            "DROP SEQUENCE IF EXISTS missing",
+        ] {
+            let stmt = conn.prepare(sql).unwrap();
+            assert!(is_pg_non_query(sql), "{sql}");
+            assert!(
+                build_field_info(&stmt, &Format::UnifiedText).is_empty(),
+                "{sql}"
+            );
+        }
     }
 
     #[test]
