@@ -91,3 +91,11 @@ expect {
     3
     4
 }
+
+test create-with-no-existing-schema-in-search-path-errors {
+    SET search_path TO sp_missing_schema;
+    CREATE TABLE t (x int);
+}
+expect error {
+    no schema has been selected to create in
+}

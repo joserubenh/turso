@@ -49,28 +49,31 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
 
     /// Name of the relation or sequence that a statement creates as
     /// `range_var`. Without a schema, it goes to the first schema of
-    /// `search_path` that exists.
+    /// `search_path` that exists, and it is an error if none exists.
     fn created_relation_name(
         &self,
         range_var: &pg_query::protobuf::RangeVar,
-    ) -> ast::QualifiedName {
+    ) -> Result<ast::QualifiedName, ParseError> {
         let temporary = range_var.relpersistence == "t";
         let Some(lookup) = self
             .lookup
             .filter(|_| range_var.schemaname.is_empty() && !temporary)
         else {
-            return self.qualified_name_from_range_var(range_var);
+            return Ok(self.qualified_name_from_range_var(range_var));
         };
         match lookup
             .search_path()
             .into_iter()
             .find(|schema| lookup.schema_exists(schema))
         {
-            Some(schema) if schema != "public" => ast::QualifiedName::fullname(
+            Some(schema) if schema == "public" => Ok(self.qualified_name_from_range_var(range_var)),
+            Some(schema) => Ok(ast::QualifiedName::fullname(
                 ast::Name::from_string(schema),
                 ast::Name::from_string(&range_var.relname),
-            ),
-            _ => self.qualified_name_from_range_var(range_var),
+            )),
+            None => Err(ParseError::ParseError(
+                "no schema has been selected to create in".to_string(),
+            )),
         }
     }
 
@@ -312,7 +315,7 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
             .as_ref()
             .ok_or_else(|| ParseError::ParseError("CREATE TABLE missing table name".into()))?;
 
-        let tbl_name = self.created_relation_name(relation);
+        let tbl_name = self.created_relation_name(relation)?;
 
         if create.table_elts.is_empty() {
             return Err(ParseError::ParseError(
@@ -1125,7 +1128,7 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
             .view
             .as_ref()
             .ok_or_else(|| ParseError::ParseError("CREATE VIEW: missing view name".into()))?;
-        let view_name = self.created_relation_name(relation);
+        let view_name = self.created_relation_name(relation)?;
 
         // Translate column aliases
         let columns: Vec<ast::IndexedColumn> = view
@@ -1251,7 +1254,7 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
             .rel
             .as_ref()
             .ok_or_else(|| ParseError::ParseError("CREATE TABLE AS: missing table name".into()))?;
-        let tbl_name = self.created_relation_name(relation);
+        let tbl_name = self.created_relation_name(relation)?;
 
         // The engine names the new table's columns after the SELECT's output
         // columns and has no way to override them, so reject an explicit
@@ -4008,7 +4011,7 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
             .sequence
             .as_ref()
             .ok_or_else(|| ParseError::ParseError("CREATE SEQUENCE missing name".into()))?;
-        let seq_name = self.created_relation_name(relation);
+        let seq_name = self.created_relation_name(relation)?;
 
         let mut start = None;
         let mut increment = None;
