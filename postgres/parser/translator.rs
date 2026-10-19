@@ -1098,10 +1098,22 @@ impl<'lookup> PostgreSQLTranslator<'lookup> {
                 if_exists: drop.missing_ok,
                 domain_name: qualified_name.name.as_str().to_string(),
             }),
-            ObjectType::ObjectSequence => Ok(ast::Stmt::DropSequence {
-                if_exists: drop.missing_ok,
-                seq_name: qualified_name,
-            }),
+            ObjectType::ObjectSequence => {
+                let seq_name = match qualified_name.db_name {
+                    None => match self.schema_of_sequence(qualified_name.name.as_str())? {
+                        Some(schema) if schema != "public" => ast::QualifiedName::fullname(
+                            ast::Name::from_string(schema),
+                            qualified_name.name,
+                        ),
+                        _ => qualified_name,
+                    },
+                    Some(_) => qualified_name,
+                };
+                Ok(ast::Stmt::DropSequence {
+                    if_exists: drop.missing_ok,
+                    seq_name,
+                })
+            }
             _ => Err(ParseError::ParseError(format!(
                 "DROP {} is not supported",
                 drop_object_type_name(remove_type)

@@ -129,3 +129,30 @@ test nextval-errors-when-search-path-first-finds-a-table {
 expect error {
     "sp_nvt_s" is not a sequence
 }
+
+test drop-sequence-found-through-search-path {
+    CREATE SCHEMA IF NOT EXISTS sp_ds;
+    DROP SEQUENCE IF EXISTS sp_ds.s;
+    CREATE SEQUENCE sp_ds.s;
+    SET search_path TO sp_ds;
+    DROP SEQUENCE s;
+    SET search_path TO public;
+    CREATE SEQUENCE sp_ds.s;
+    SELECT 1;
+}
+expect {
+    1
+}
+
+test drop-sequence-errors-when-search-path-first-finds-a-table {
+    DROP TABLE IF EXISTS sp_dst_s;
+    CREATE TABLE sp_dst_s (x int);
+    CREATE SCHEMA IF NOT EXISTS sp_dst;
+    DROP SEQUENCE IF EXISTS sp_dst.sp_dst_s;
+    CREATE SEQUENCE sp_dst.sp_dst_s;
+    SET search_path TO public, sp_dst;
+    DROP SEQUENCE sp_dst_s;
+}
+expect error {
+    "sp_dst_s" is not a sequence
+}
