@@ -67,3 +67,27 @@ test public-schema-qualified-column-reference {
 expect {
     b
 }
+
+test create-follows-search-path {
+    CREATE SCHEMA IF NOT EXISTS sp_cf;
+    DROP VIEW IF EXISTS sp_cf.v;
+    DROP TABLE IF EXISTS sp_cf.t;
+    DROP TABLE IF EXISTS sp_cf.u;
+    DROP SEQUENCE IF EXISTS sp_cf.s;
+    SET search_path TO sp_cf, public;
+    CREATE TABLE t (x int);
+    CREATE VIEW v AS SELECT 2 AS x;
+    CREATE TABLE u AS SELECT 3 AS x;
+    CREATE SEQUENCE s START 4;
+    INSERT INTO sp_cf.t VALUES (1);
+    SELECT x FROM sp_cf.t;
+    SELECT x FROM sp_cf.v;
+    SELECT x FROM sp_cf.u;
+    SELECT nextval('sp_cf.s');
+}
+expect {
+    1
+    2
+    3
+    4
+}

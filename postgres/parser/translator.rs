@@ -20,15 +20,58 @@ pub struct TranslateResult {
     pub cmd: ast::Cmd,
 }
 
-/// Translates a PostgreSQL query into Turso's AST
-#[derive(Default)]
-pub struct PostgreSQLTranslator {
-    // TODO: Add schema information, type mappings, etc.
+/// The schemas of a session, which the translator needs to place the
+/// objects that a statement creates without naming a schema.
+pub trait SchemaLookup {
+    /// The schemas of `search_path`, in order.
+    fn search_path(&self) -> Vec<String>;
+    /// Whether schema `schema` exists.
+    fn schema_exists(&self, schema: &str) -> bool;
 }
 
-impl PostgreSQLTranslator {
+/// Translates a PostgreSQL query into Turso's AST
+#[derive(Default)]
+pub struct PostgreSQLTranslator<'lookup> {
+    lookup: Option<&'lookup dyn SchemaLookup>,
+}
+
+impl<'lookup> PostgreSQLTranslator<'lookup> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A translator that creates objects in the schemas of `lookup`.
+    pub fn with_lookup(lookup: &'lookup dyn SchemaLookup) -> Self {
+        Self {
+            lookup: Some(lookup),
+        }
+    }
+
+    /// Name of the relation or sequence that a statement creates as
+    /// `range_var`. Without a schema, it goes to the first schema of
+    /// `search_path` that exists.
+    fn created_relation_name(
+        &self,
+        range_var: &pg_query::protobuf::RangeVar,
+    ) -> ast::QualifiedName {
+        let temporary = range_var.relpersistence == "t";
+        let Some(lookup) = self
+            .lookup
+            .filter(|_| range_var.schemaname.is_empty() && !temporary)
+        else {
+            return self.qualified_name_from_range_var(range_var);
+        };
+        match lookup
+            .search_path()
+            .into_iter()
+            .find(|schema| lookup.schema_exists(schema))
+        {
+            Some(schema) if schema != "public" => ast::QualifiedName::fullname(
+                ast::Name::from_string(schema),
+                ast::Name::from_string(&range_var.relname),
+            ),
+            _ => self.qualified_name_from_range_var(range_var),
+        }
     }
 
     /// Build a `QualifiedName` from a PG `RangeVar`, preserving schema qualifier.
@@ -269,7 +312,7 @@ impl PostgreSQLTranslator {
             .as_ref()
             .ok_or_else(|| ParseError::ParseError("CREATE TABLE missing table name".into()))?;
 
-        let tbl_name = self.qualified_name_from_range_var(relation);
+        let tbl_name = self.created_relation_name(relation);
 
         if create.table_elts.is_empty() {
             return Err(ParseError::ParseError(
@@ -1082,7 +1125,7 @@ impl PostgreSQLTranslator {
             .view
             .as_ref()
             .ok_or_else(|| ParseError::ParseError("CREATE VIEW: missing view name".into()))?;
-        let view_name = self.qualified_name_from_range_var(relation);
+        let view_name = self.created_relation_name(relation);
 
         // Translate column aliases
         let columns: Vec<ast::IndexedColumn> = view
@@ -1208,7 +1251,7 @@ impl PostgreSQLTranslator {
             .rel
             .as_ref()
             .ok_or_else(|| ParseError::ParseError("CREATE TABLE AS: missing table name".into()))?;
-        let tbl_name = self.qualified_name_from_range_var(relation);
+        let tbl_name = self.created_relation_name(relation);
 
         // The engine names the new table's columns after the SELECT's output
         // columns and has no way to override them, so reject an explicit
@@ -3965,7 +4008,7 @@ impl PostgreSQLTranslator {
             .sequence
             .as_ref()
             .ok_or_else(|| ParseError::ParseError("CREATE SEQUENCE missing name".into()))?;
-        let seq_name = self.qualified_name_from_range_var(relation);
+        let seq_name = self.created_relation_name(relation);
 
         let mut start = None;
         let mut increment = None;

@@ -10,6 +10,7 @@ use turso_pg_parser::translator::{
     is_comment_on, is_refresh_matview, is_set_transaction, try_extract_copy_from,
     try_extract_create_schema, try_extract_drop_schema, try_extract_set, try_extract_show,
     PgCopyFromStmt, PgCreateSchemaStmt, PgDropSchemaStmt, PgSetStmt, PostgreSQLTranslator,
+    SchemaLookup,
 };
 
 use crate::copy::parse_copy_text_format;
@@ -177,7 +178,10 @@ fn prepare_statement(pg_conn: &Arc<PgConnectionInner>, sql: &str) -> Result<Stat
 
     let parse_result =
         turso_pg_parser::parse(sql).map_err(|e| LimboError::ParseError(e.to_string()))?;
-    let translator = PostgreSQLTranslator::new();
+    let lookup = SessionSchemaLookup {
+        conn: &pg_conn.conn,
+    };
+    let translator = PostgreSQLTranslator::with_lookup(&lookup);
     let translated = translator
         .translate_with_prereqs(&parse_result)
         .map_err(|e| LimboError::ParseError(e.to_string()))?;
@@ -205,6 +209,35 @@ fn prepare_statement(pg_conn: &Arc<PgConnectionInner>, sql: &str) -> Result<Stat
     pg_conn
         .conn
         .prepare_translated_cmd_with_options(translated.cmd, sql, &options)
+}
+
+/// Looks up the schemas of a session for the translator.
+struct SessionSchemaLookup<'c> {
+    conn: &'c Arc<Connection>,
+}
+
+impl SchemaLookup for SessionSchemaLookup<'_> {
+    fn search_path(&self) -> Vec<String> {
+        let state = self
+            .conn
+            .context::<PgSessionState>()
+            .expect("PostgreSQL connections have session state")
+            .lock()
+            .unwrap();
+        match &state.search_path {
+            Some(search_path) => search_path.clone(),
+            None => vec!["$user".to_string(), "public".to_string()],
+        }
+    }
+
+    fn schema_exists(&self, schema: &str) -> bool {
+        schema == "public"
+            || self
+                .conn
+                .attached_database_names()
+                .iter()
+                .any(|name| name == schema)
+    }
 }
 
 fn reject_catalog_dml(stmt: &ast::Stmt) -> Result<()> {
